@@ -6,7 +6,7 @@ from tqdm import tqdm  # 用于显示进度条
 
 # ================= 配置区域 =================
 # 请替换你的 API Key
-os.environ["GOOGLE_API_KEY"] = "AIzaSyAttTS3ZPtU4_wE-3wnOUcIquatiyhFlx4"
+os.environ["GOOGLE_API_KEY"] = ""
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 # 初始化模型 (推荐使用 Pro 或 Flash)

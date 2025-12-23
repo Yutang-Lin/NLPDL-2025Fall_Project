@@ -5,27 +5,46 @@ import time
 from tqdm import tqdm
 
 # ================= 配置区域 =================
-os.environ["GOOGLE_API_KEY"] = "AIzaSyAttTS3ZPtU4_wE-3wnOUcIquatiyhFlx4"
+os.environ["GOOGLE_API_KEY"] = ""
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 model = genai.GenerativeModel('gemini-3-flash-preview')
 
 # 定义 10 个生活化/通用话题，确保覆盖面广
 TOPICS = [
-    "Daily Routine & Chores",
-    "Weather & Climate",
-    "Food & Dining",
-    "Shopping & Commerce",
-    "Technology & Gadgets",
-    "Health & Fitness",
-    "Work & Office Life",
-    "Travel & Transport",
-    "Emotions & Relationships",
-    "Entertainment"
+    # 1. 厨房里的科学 (化学/物理基础，但不涉及高深公式)
+    "Cooking Science",
+    
+    # 2. 自然现象 (地球科学基础)
+    "Weather Phenomena",
+    
+    # 3. 身体与健康 (生物/医学基础)
+    "Human Body",
+    
+    # 4. 交通与机械 (工程学基础)
+    "Transportation",
+    
+    # 5. 金钱与交易 (经济学基础)
+    "Money & Value",
+    
+    # 6. 建筑与结构 (力学基础)
+    "Architecture",
+    
+    # 7. 声音与光 (波的基础)
+    "Sound & Light",
+    
+    # 8. 互联网与通信 (信息论基础)
+    "Digital Communication",
+    
+    # 9. 动植物行为 (生态学基础)
+    "Nature & Wildlife",
+    
+    # 10. 社会规则 (社会学/心理学基础)
+    "Social Dynamics"
 ]
 
-TARGET_PER_TOPIC = 1
-BATCH_SIZE = 1
+TARGET_PER_TOPIC = 50
+BATCH_SIZE = 5
 
 # ================= 核心生成逻辑 =================
 
@@ -47,19 +66,19 @@ def generate_style_pairs_dataset():
             # 风格差异专用 PROMPT
             # ====================================================
             prompt = f"""
-            Role: You are a linguistic expert specializing in register variation (Style Transfer).
+            Role: You are an expert educator and science communicator with mastery over different pedagogical tones.
             
             Task: Generate {BATCH_SIZE} triples of sentences related to the topic: "{topic}".
             
             Structure for each triple:
             1.  **Neutral:** A simple, factual, standard English sentence (The core meaning).
-            2.  **Casual:** The same meaning, but rewritten in extremely informal, slang-heavy, spoken English (Gen-Z style, text message style, simple vocab).
-            3.  **Formal:** The same meaning, but rewritten in extremely formal, academic, bureaucratic, or archaic English (Complex syntax, GRE vocabulary, passive voice).
+            2.  **Simple_Explanation:** The same meaning, but rewritten for a target audience of **K12 children or the elderly**. The tone should be warm, patient, encouraging, and extremely easy to follow.
+            3.  **Advanced_Explanation:** The same meaning, but rewritten for a target audience of **Graduate Students or Peers**. The tone should be rigorous, dense, precise, and assume high cognitive load capacity.
             
             Guidelines:
             - The **meaning** must remain exactly the same across all three versions.
-            - **Casual** should use contractions, slang (like "gonna", "legit", "vibes"), and simple structure.
-            - **Formal** should sound like a legal contract, a scientific paper, or a 19th-century novel.
+            - **Simple_Explanation:** Use short sentences, active voice, simple analogies, and a "gentle/guiding" tone. Avoid jargon. (e.g., "Think of it like...", "This helps us to...")
+            - **Advanced_Explanation:** Use domain-specific terminology (appropriate for the topic), complex syntactic structures, and precise definitions. (e.g., "The mechanism implies...", "Correlation suggests...")
             - Strictly English.
             - Return a RAW JSON list.
             
@@ -67,9 +86,9 @@ def generate_style_pairs_dataset():
             [
                 {{
                     "topic": "{topic}",
-                    "neutral": "I am very hungry.",
-                    "casual": "Yo, I'm literally starving rn, need food ASAP.",
-                    "formal": "The subject is currently experiencing an acute physiological requirement for nutritional sustenance."
+                    "neutral": "Plants need sunlight to grow.",
+                    "simple_explanation": "Just like you need food to get big and strong, plants need sunshine to make their own energy! It's their favorite snack.",
+                    "advanced_explanation": "Photosynthesis is the fundamental endothermic reaction by which autotrophs convert light energy into chemical energy to sustain growth."
                 }}
             ]
             """
