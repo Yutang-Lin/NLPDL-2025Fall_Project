@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Dimensional Activation Steering</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .content {
+            padding: 40px;
+        }
+
+        .question-section {
+            margin-bottom: 30px;
+        }
+
+        .question-section label {
+            display: block;
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .question-input {
+            width: 100%;
+            padding: 15px;
+            font-size: 1em;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            transition: border-color 0.3s;
+        }
+
+        .question-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .controls-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .control-card {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+            transition: all 0.3s;
+        }
+
+        .control-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+        }
+
+        .control-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .control-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .control-value {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #667eea;
+            min-width: 60px;
+            text-align: right;
+        }
+
+        .slider-container {
+            position: relative;
+        }
+
+        .slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            transition: all 0.2s;
+        }
+
+        .slider::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            background: #764ba2;
+        }
+
+        .slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .slider-description {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 8px;
+            line-height: 1.4;
+        }
+
+        .button-section {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .generate-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 50px;
+            font-size: 1.2em;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .generate-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .generate-btn:active {
+            transform: translateY(0);
+        }
+
+        .generate-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .result-section {
+            margin-top: 30px;
+        }
+
+        .result-card {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .result-header {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .result-text {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            line-height: 1.8;
+            color: #333;
+            white-space: pre-wrap;
+            min-height: 100px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric {
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid #e0e0e0;
+        }
+
+        .metric-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .metric-value {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+            font-size: 1.1em;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .persona-selector {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .persona-selector label {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-right: 15px;
+            color: #333;
+        }
+
+        .persona-selector select {
+            padding: 10px 20px;
+            font-size: 1em;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            background: white;
+            cursor: pointer;
+        }
+
+        .persona-selector select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Multi-Dimensional Activation Steering</h1>
+            <p>Control Capability, Style, Density, and Correctness with Interactive Sliders</p>
+        </div>
+
+        <div class="content">
+            <div class="question-section">
+                <label for="question">Question:</label>
+                <input 
+                    type="text" 
+                    id="question" 
+                    class="question-input" 
+                    value="Explain quantum entanglement."
+                    placeholder="Enter your question here..."
+                />
+            </div>
+
+            <div class="persona-selector">
+                <label for="persona">Persona:</label>
+                <select id="persona">
+                    <option value="low">Low (5-year-old child)</option>
+                    <option value="high">High (Expert)</option>
+                </select>
+            </div>
+
+            <div class="controls-section">
+                <div class="control-card">
+                    <div class="control-header">
+                        <span class="control-title">🎯 Capability</span>
+                        <span class="control-value" id="cap-value">0.0</span>
+                    </div>
+                    <div class="slider-container">
+                        <input 
+                            type="range" 
+                            id="cap-slider" 
+                            class="slider" 
+                            min="-5" 
+                            max="5" 
+                            step="0.1" 
+                            value="0"
+                        />
+                    </div>
+                    <div class="slider-description">
+                        Controls reasoning depth. Positive = expert-level, Negative = novice-level
+                    </div>
+                </div>
+
+                <div class="control-card">
+                    <div class="control-header">
+                        <span class="control-title">📝 Style</span>
+                        <span class="control-value" id="style-value">0.0</span>
+                    </div>
+                    <div class="slider-container">
+                        <input 
+                            type="range" 
+                            id="style-slider" 
+                            class="slider" 
+                            min="-5" 
+                            max="5" 
+                            step="0.1" 
+                            value="0"
+                        />
+                    </div>
+                    <div class="slider-description">
+                        Controls language formality. Positive = professional, Negative = casual/naive
+                    </div>
+                </div>
+
+                <div class="control-card">
+                    <div class="control-header">
+                        <span class="control-title">📊 Density</span>
+                        <span class="control-value" id="density-value">0.0</span>
+                    </div>
+                    <div class="slider-container">
+                        <input 
+                            type="range" 
+                            id="density-slider" 
+                            class="slider" 
+                            min="-5" 
+                            max="5" 
+                            step="0.1" 
+                            value="0"
+                        />
+                    </div>
+                    <div class="slider-description">
+                        Controls response length. Positive = comprehensive, Negative = concise
+                    </div>
+                </div>
+
+                <div class="control-card">
+                    <div class="control-header">
+                        <span class="control-title">✅ Correctness</span>
+                        <span class="control-value" id="correctness-value">0.0</span>
+                    </div>
+                    <div class="slider-container">
+                        <input 
+                            type="range" 
+                            id="correctness-slider" 
+                            class="slider" 
+                            min="-5" 
+                            max="5" 
+                            step="0.1" 
+                            value="0"
+                        />
+                    </div>
+                    <div class="slider-description">
+                        Controls factual accuracy. Positive = correct, Negative = incorrect
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-section">
+                <button class="generate-btn" id="generate-btn" onclick="generateText()">
+                    Generate Response
+                </button>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                Generating response...
+            </div>
+
+            <div class="result-section" id="result-section" style="display: none;">
+                <div class="result-card">
+                    <div class="result-header">Generated Response:</div>
+                    <div class="result-text" id="result-text"></div>
+                    <div class="metrics" id="metrics"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Update value displays when sliders change
+        document.getElementById('cap-slider').addEventListener('input', function(e) {
+            document.getElementById('cap-value').textContent = parseFloat(e.target.value).toFixed(1);
+        });
+
+        document.getElementById('style-slider').addEventListener('input', function(e) {
+            document.getElementById('style-value').textContent = parseFloat(e.target.value).toFixed(1);
+        });
+
+        document.getElementById('density-slider').addEventListener('input', function(e) {
+            document.getElementById('density-value').textContent = parseFloat(e.target.value).toFixed(1);
+        });
+
+        document.getElementById('correctness-slider').addEventListener('input', function(e) {
+            document.getElementById('correctness-value').textContent = parseFloat(e.target.value).toFixed(1);
+        });
+
+        // Allow Enter key to generate
+        document.getElementById('question').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                generateText();
+            }
+        });
+
+        async function generateText() {
+            const question = document.getElementById('question').value;
+            const persona = document.getElementById('persona').value;
+            const alpha_cap = parseFloat(document.getElementById('cap-slider').value);
+            const alpha_style = parseFloat(document.getElementById('style-slider').value);
+            const alpha_density = parseFloat(document.getElementById('density-slider').value);
+            const alpha_correctness = parseFloat(document.getElementById('correctness-slider').value);
+
+            // Show loading
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('result-section').style.display = 'none';
+            document.getElementById('generate-btn').disabled = true;
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        question: question,
+                        persona: persona,
+                        alpha_cap: alpha_cap,
+                        alpha_style: alpha_style,
+                        alpha_density: alpha_density,
+                        alpha_correctness: alpha_correctness,
+                    }),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Display result
+                    document.getElementById('result-text').textContent = data.text;
+                    
+                    // Display metrics
+                    const metricsHtml = `
+                        <div class="metric">
+                            <div class="metric-label">Logic Score</div>
+                            <div class="metric-value">${data.metrics.logic_score.toFixed(3)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Jargon Score</div>
+                            <div class="metric-value">${data.metrics.jargon_score.toFixed(3)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Verbosity</div>
+                            <div class="metric-value">${data.metrics.verbosity_score.toFixed(3)}</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-label">Correctness</div>
+                            <div class="metric-value">${data.metrics.correctness_score.toFixed(3)}</div>
+                        </div>
+                    `;
+                    document.getElementById('metrics').innerHTML = metricsHtml;
+                    
+                    document.getElementById('result-section').style.display = 'block';
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error generating response: ' + error.message);
+            } finally {
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('generate-btn').disabled = false;
+            }
+        }
+
+        // Check server status on load
+        window.addEventListener('load', async function() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                if (!data.ready) {
+                    alert('Model is not ready. Please wait for initialization.');
+                }
+            } catch (error) {
+                console.error('Status check failed:', error);
+            }
+        });
+    </script>
+</body>
+</html>
+

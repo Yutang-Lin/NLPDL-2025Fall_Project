@@ -1,19 +1,34 @@
 import json
+from typing import List, Dict, Tuple, Optional
 
-def format_data_for_experiment(capability_file, style_file):
+
+def format_data_for_experiment(
+    capability_file: str,
+    style_file: Optional[str] = None,
+) -> Tuple[List[Dict], List[Dict]]:
     """
     Load JSON data and format it into experiment-ready prompt lists with English templates.
     """
     
-    # 1. Load Data
+    # 1. Load Capability Data (required)
     try:
         with open(capability_file, 'r', encoding='utf-8') as f:
             cap_data = json.load(f)
-        with open(style_file, 'r', encoding='utf-8') as f:
-            style_data = json.load(f)
     except FileNotFoundError as e:
-        print(f"Error loading files: {e}")
+        print(f"[format_data_for_experiment] Error loading capability file: {e}")
         return [], []
+
+    # 1b. Load Style Data (optional for this project phase)
+    style_data = []
+    if style_file is not None:
+        try:
+            with open(style_file, 'r', encoding='utf-8') as f:
+                style_data = json.load(f)
+        except FileNotFoundError as e:
+            # For the current project we can safely ignore missing style data
+            print(f"[format_data_for_experiment] Warning: style file not found ({e}). "
+                  f"Continuing with capability-only setup.")
+            style_data = []
 
     # ==========================================
     # Group A: Capability Pairs (For extracting Intelligence Vector)
@@ -62,28 +77,32 @@ def format_data_for_experiment(capability_file, style_file):
     sys_prompt_casual = "System: Rewrite the following sentence to be extremely casual, using slang and informal grammar."
     sys_prompt_formal = "System: Rewrite the following sentence to be extremely formal, academic, and sophisticated."
     
-    style_pairs_formatted = []
-    for item in style_data:
-        # 适配之前代码生成的字段名
-        # keys 应该是 'neutral' (作为输入), 'casual' (作为输出1), 'formal' (作为输出2)
-        # 注意：这里可能需要根据你实际生成的 JSON key 做微调，下面按之前的 generate_style_pairs_dataset 代码逻辑适配
-        content = item.get('neutral', '')       # The neutral input
-        casual_out = item.get('casual', '')     # The slang output
-        formal_out = item.get('formal', '')     # The academic output
-        
-        if not content or not casual_out: continue
+    style_pairs_formatted: List[Dict] = []
+    if style_data:
+        for item in style_data:
+            # 适配之前代码生成的字段名
+            # keys 应该是 'neutral' (作为输入), 'casual' (作为输出1), 'formal' (作为输出2)
+            content = item.get('neutral', '')       # The neutral input
+            casual_out = item.get('casual', '')     # The slang output
+            formal_out = item.get('formal', '')     # The academic output
 
-        # For Style Pairs, we look at the difference in the Assistant's output.
-        text_casual = f"{sys_prompt_casual}\nUser: {content}\nAssistant: {casual_out}"
-        text_formal = f"{sys_prompt_formal}\nUser: {content}\nAssistant: {formal_out}"
-        
-        style_pairs_formatted.append({
-            "type": "style",
-            "text_casual": text_casual,
-            "text_formal": text_formal
-        })
-        
-    print(f"Loaded {len(cap_pairs_formatted)} capability pairs and {len(style_pairs_formatted)} style pairs.")
+            if not content or not casual_out:
+                continue
+
+            # For Style Pairs, we look at the difference in the Assistant's output.
+            text_casual = f"{sys_prompt_casual}\nUser: {content}\nAssistant: {casual_out}"
+            text_formal = f"{sys_prompt_formal}\nUser: {content}\nAssistant: {formal_out}"
+
+            style_pairs_formatted.append({
+                "type": "style",
+                "text_casual": text_casual,
+                "text_formal": text_formal
+            })
+
+    print(
+        f"Loaded {len(cap_pairs_formatted)} capability pairs "
+        f"and {len(style_pairs_formatted)} style pairs."
+    )
     return cap_pairs_formatted, style_pairs_formatted
 
 # Example Usage:

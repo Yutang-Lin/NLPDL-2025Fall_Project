@@ -213,3 +213,7 @@ __marimo__/
 uv.lock
 main.py
 .python-version
+**.out
+models/
+.cursor
+**/**.npz
