@@ -5,7 +5,7 @@ import time
 from tqdm import tqdm
 
 # ================= 配置区域 =================
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBqvh6OHc9iEz3fclFWKp-i0BJ8BHIMw24"
+os.environ["GOOGLE_API_KEY"] = ""
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 model = genai.GenerativeModel('gemini-3-flash-preview')
