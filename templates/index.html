@@ -19,7 +19,7 @@
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1800px;
             margin: 0 auto;
             background: white;
             border-radius: 20px;
@@ -195,8 +195,60 @@
             cursor: not-allowed;
         }
 
+        .stop-btn, .save-btn {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            border: none;
+            padding: 15px 50px;
+            font-size: 1.2em;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+        }
+
+        .stop-btn:hover, .save-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(245, 87, 108, 0.6);
+        }
+
+        .save-btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            box-shadow: 0 5px 15px rgba(79, 172, 254, 0.4);
+        }
+
+        .save-btn:hover {
+            box-shadow: 0 8px 20px rgba(79, 172, 254, 0.6);
+        }
+
+        .reset-btn {
+            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            color: white;
+            border: none;
+            padding: 15px 50px;
+            font-size: 1.2em;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 5px 15px rgba(250, 112, 154, 0.4);
+        }
+
+        .reset-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(250, 112, 154, 0.6);
+        }
+
         .result-section {
             margin-top: 30px;
+        }
+
+        .results-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
         }
 
         .result-card {
@@ -204,6 +256,11 @@
             border-radius: 15px;
             padding: 25px;
             border: 2px solid #e0e0e0;
+        }
+
+        .result-card.streaming {
+            border-color: #667eea;
+            box-shadow: 0 0 10px rgba(102, 126, 234, 0.3);
         }
 
         .result-header {
@@ -330,6 +387,23 @@
                     <option value="low">Low (5-year-old child)</option>
                     <option value="high">High (Expert)</option>
                 </select>
+                <label for="num-responses" style="margin-left: 30px;">Number of Responses:</label>
+                <input 
+                    type="number" 
+                    id="num-responses" 
+                    min="1" 
+                    max="16" 
+                    value="1"
+                    style="padding: 8px 15px; font-size: 1em; border: 2px solid #e0e0e0; border-radius: 10px; width: 80px; margin-left: 10px;"
+                />
+                <label for="use-streaming" style="margin-left: 30px;">
+                    <input 
+                        type="checkbox" 
+                        id="use-streaming"
+                        style="margin-right: 5px;"
+                    />
+                    Enable Streaming
+                </label>
             </div>
 
             <div class="controls-section">
@@ -422,6 +496,15 @@
                 <button class="generate-btn" id="generate-btn" onclick="generateText()">
                     Generate Response
                 </button>
+                <button class="stop-btn" id="stop-btn" onclick="stopGeneration()" style="display: none; margin-left: 10px;">
+                    Stop Generation
+                </button>
+                <button class="save-btn" id="save-btn" onclick="saveOutputs()" style="display: none; margin-left: 10px;">
+                    Save Outputs
+                </button>
+                <button class="reset-btn" id="reset-btn" onclick="resetAlphas()" style="margin-left: 10px;">
+                    Reset Alphas
+                </button>
             </div>
 
             <div class="loading" id="loading">
@@ -430,31 +513,82 @@
             </div>
 
             <div class="result-section" id="result-section" style="display: none;">
-                <div class="result-card">
-                    <div class="result-header">Generated Response:</div>
-                    <div class="result-text" id="result-text"></div>
-                    <div class="metrics" id="metrics"></div>
-                </div>
+                <div class="results-container" id="results-container"></div>
             </div>
         </div>
     </div>
 
     <script>
+        // Global variables for tracking generation
+        let currentGenerationId = null;
+        let activeEventSources = [];
+        let currentOutputs = [];
+        let alphaUpdateTimeout = null;
+
+        // Function to update alpha values during streaming
+        async function updateAlphasDuringStreaming() {
+            if (!currentGenerationId || activeEventSources.length === 0) {
+                return; // Not streaming, don't update
+            }
+
+            const alpha_cap = parseFloat(document.getElementById('cap-slider').value);
+            const alpha_style = parseFloat(document.getElementById('style-slider').value);
+            const alpha_density = parseFloat(document.getElementById('density-slider').value);
+            const alpha_correctness = parseFloat(document.getElementById('correctness-slider').value);
+
+            try {
+                const response = await fetch('/api/update_alphas', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        generation_id: currentGenerationId,
+                        alpha_cap: alpha_cap,
+                        alpha_style: alpha_style,
+                        alpha_density: alpha_density,
+                        alpha_correctness: alpha_correctness,
+                    }),
+                });
+
+                const data = await response.json();
+                if (data.success) {
+                    console.log('Alpha values updated:', data.alphas);
+                } else {
+                    console.warn('Failed to update alphas:', data.error);
+                }
+            } catch (error) {
+                console.warn('Error updating alphas:', error);
+            }
+        }
+
+        // Debounced alpha update function
+        function debouncedAlphaUpdate() {
+            if (alphaUpdateTimeout) {
+                clearTimeout(alphaUpdateTimeout);
+            }
+            alphaUpdateTimeout = setTimeout(updateAlphasDuringStreaming, 200); // 200ms debounce
+        }
+
         // Update value displays when sliders change
         document.getElementById('cap-slider').addEventListener('input', function(e) {
             document.getElementById('cap-value').textContent = parseFloat(e.target.value).toFixed(1);
+            debouncedAlphaUpdate(); // Update alphas during streaming
         });
 
         document.getElementById('style-slider').addEventListener('input', function(e) {
             document.getElementById('style-value').textContent = parseFloat(e.target.value).toFixed(1);
+            debouncedAlphaUpdate(); // Update alphas during streaming
         });
 
         document.getElementById('density-slider').addEventListener('input', function(e) {
             document.getElementById('density-value').textContent = parseFloat(e.target.value).toFixed(1);
+            debouncedAlphaUpdate(); // Update alphas during streaming
         });
 
         document.getElementById('correctness-slider').addEventListener('input', function(e) {
             document.getElementById('correctness-value').textContent = parseFloat(e.target.value).toFixed(1);
+            debouncedAlphaUpdate(); // Update alphas during streaming
         });
 
         // Allow Enter key to generate
@@ -464,6 +598,42 @@
             }
         });
 
+        function createResultCard(responseId) {
+            const card = document.createElement('div');
+            card.className = 'result-card';
+            card.id = `result-card-${responseId}`;
+            card.innerHTML = `
+                <div class="result-header">Response ${responseId + 1}:</div>
+                <div class="result-text" id="result-text-${responseId}"></div>
+                <div class="metrics" id="metrics-${responseId}"></div>
+            `;
+            return card;
+        }
+
+        function updateMetrics(responseId, metrics) {
+            const metricsContainer = document.getElementById(`metrics-${responseId}`);
+            if (!metricsContainer || !metrics) return;
+            
+            metricsContainer.innerHTML = `
+                <div class="metric">
+                    <div class="metric-label">Logic Score</div>
+                    <div class="metric-value">${metrics.logic_score ? metrics.logic_score.toFixed(3) : 'N/A'}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Jargon Score</div>
+                    <div class="metric-value">${metrics.jargon_score ? metrics.jargon_score.toFixed(3) : 'N/A'}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Verbosity</div>
+                    <div class="metric-value">${metrics.verbosity_score ? metrics.verbosity_score.toFixed(3) : 'N/A'}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Correctness</div>
+                    <div class="metric-value">${metrics.correctness_score ? metrics.correctness_score.toFixed(3) : 'N/A'}</div>
+                </div>
+            `;
+        }
+
         async function generateText() {
             const question = document.getElementById('question').value;
             const persona = document.getElementById('persona').value;
@@ -471,65 +641,454 @@
             const alpha_style = parseFloat(document.getElementById('style-slider').value);
             const alpha_density = parseFloat(document.getElementById('density-slider').value);
             const alpha_correctness = parseFloat(document.getElementById('correctness-slider').value);
+            const numResponses = parseInt(document.getElementById('num-responses').value) || 1;
+            const useStreaming = document.getElementById('use-streaming').checked;
 
-            // Show loading
+            // Show loading and buttons
             document.getElementById('loading').classList.add('active');
             document.getElementById('result-section').style.display = 'none';
             document.getElementById('generate-btn').disabled = true;
+            document.getElementById('stop-btn').style.display = 'inline-block';
+            document.getElementById('save-btn').style.display = 'none';
+
+            // Stop all existing generations first
+            // Close any existing event sources immediately
+            activeEventSources.forEach(es => {
+                try {
+                    es.close();
+                } catch (e) {
+                    console.warn('Error closing event source:', e);
+                }
+            });
+            activeEventSources = [];
+            
+            // Clear alpha update timeout
+            if (alphaUpdateTimeout) {
+                clearTimeout(alphaUpdateTimeout);
+                alphaUpdateTimeout = null;
+            }
+            
+            // Clear previous results and outputs
+            const resultsContainer = document.getElementById('results-container');
+            resultsContainer.innerHTML = '';
+            currentOutputs = [];
+            
+            // Stop existing generation if any
+            if (currentGenerationId) {
+                try {
+                    fetch('/api/stop', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            generation_id: currentGenerationId,
+                            force: true,
+                        }),
+                    }).catch(err => console.warn('Error stopping previous generation:', err));
+                } catch (e) {
+                    console.warn('Error stopping previous generation:', e);
+                }
+            }
+            
+            // Reset generation ID for new generation
+            currentGenerationId = null;
 
             try {
-                const response = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        question: question,
-                        persona: persona,
-                        alpha_cap: alpha_cap,
-                        alpha_style: alpha_style,
-                        alpha_density: alpha_density,
-                        alpha_correctness: alpha_correctness,
-                    }),
-                });
-
-                const data = await response.json();
-
-                if (data.success) {
-                    // Display result
-                    document.getElementById('result-text').textContent = data.text;
-                    
-                    // Display metrics
-                    const metricsHtml = `
-                        <div class="metric">
-                            <div class="metric-label">Logic Score</div>
-                            <div class="metric-value">${data.metrics.logic_score.toFixed(3)}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Jargon Score</div>
-                            <div class="metric-value">${data.metrics.jargon_score.toFixed(3)}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Verbosity</div>
-                            <div class="metric-value">${data.metrics.verbosity_score.toFixed(3)}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Correctness</div>
-                            <div class="metric-value">${data.metrics.correctness_score.toFixed(3)}</div>
-                        </div>
-                    `;
-                    document.getElementById('metrics').innerHTML = metricsHtml;
-                    
-                    document.getElementById('result-section').style.display = 'block';
+                if (useStreaming) {
+                    // Streaming response(s) - single request handles all responses
+                    await generateStreaming(question, persona, alpha_cap, alpha_style, alpha_density, alpha_correctness, numResponses);
                 } else {
-                    alert('Error: ' + data.error);
+                    // Non-streaming generation
+                    // Non-streaming (parallel or single)
+                    // Generate a unique ID for this generation
+                    currentGenerationId = `gen_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    const response = await fetch('/api/generate', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            question: question,
+                            persona: persona,
+                            alpha_cap: alpha_cap,
+                            alpha_style: alpha_style,
+                            alpha_density: alpha_density,
+                            alpha_correctness: alpha_correctness,
+                            num_responses: numResponses,
+                            generation_id: currentGenerationId,
+                        }),
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Store generation_id if provided
+                        if (data.generation_id) {
+                            currentGenerationId = data.generation_id;
+                        }
+                        
+                        // Display all responses
+                        resultsContainer.innerHTML = '';
+                        currentOutputs = [];
+                        data.responses.forEach((resp, idx) => {
+                            const card = createResultCard(resp.id);
+                            const textElement = card.querySelector(`#result-text-${resp.id}`);
+                            textElement.textContent = resp.text;
+                            updateMetrics(resp.id, resp.metrics);
+                            resultsContainer.appendChild(card);
+                            
+                            // Store output for saving
+                            currentOutputs.push({
+                                id: resp.id,
+                                text: resp.text,
+                                metrics: resp.metrics,
+                                question: question,
+                                parameters: {
+                                    persona: persona,
+                                    alpha_cap: alpha_cap,
+                                    alpha_style: alpha_style,
+                                    alpha_density: alpha_density,
+                                    alpha_correctness: alpha_correctness,
+                                }
+                            });
+                        });
+                        document.getElementById('result-section').style.display = 'block';
+                        document.getElementById('save-btn').style.display = 'inline-block';
+                    } else {
+                        alert('Error: ' + data.error);
+                    }
                 }
             } catch (error) {
                 alert('Error generating response: ' + error.message);
             } finally {
                 document.getElementById('loading').classList.remove('active');
                 document.getElementById('generate-btn').disabled = false;
+                document.getElementById('stop-btn').style.display = 'none';
             }
+        }
+
+        function resetAlphas() {
+            // Reset all alpha sliders to zero
+            document.getElementById('cap-slider').value = 0;
+            document.getElementById('style-slider').value = 0;
+            document.getElementById('density-slider').value = 0;
+            document.getElementById('correctness-slider').value = 0;
+            
+            // Update display values
+            document.getElementById('cap-value').textContent = '0.0';
+            document.getElementById('style-value').textContent = '0.0';
+            document.getElementById('density-value').textContent = '0.0';
+            document.getElementById('correctness-value').textContent = '0.0';
+            
+            // Update alphas during streaming if active
+            if (currentGenerationId && activeEventSources.length > 0) {
+                updateAlphasDuringStreaming();
+            }
+        }
+
+        async function stopGeneration() {
+            // First, close all event sources immediately to stop streaming
+            activeEventSources.forEach(es => {
+                es.close();
+            });
+            activeEventSources = [];
+            
+            // Clear alpha update timeout
+            if (alphaUpdateTimeout) {
+                clearTimeout(alphaUpdateTimeout);
+                alphaUpdateTimeout = null;
+            }
+            
+            if (!currentGenerationId) {
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('generate-btn').disabled = false;
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/stop', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        generation_id: currentGenerationId,
+                        force: true, // Signal to force termination
+                    }),
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('stop-btn').style.display = 'none';
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('generate-btn').disabled = false;
+                } else {
+                    // Even if API call fails, we've closed event sources
+                    document.getElementById('stop-btn').style.display = 'none';
+                    document.getElementById('loading').classList.remove('active');
+                    document.getElementById('generate-btn').disabled = false;
+                }
+            } catch (error) {
+                // Even if API call fails, we've closed event sources
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('loading').classList.remove('active');
+                document.getElementById('generate-btn').disabled = false;
+            }
+        }
+
+        async function saveOutputs() {
+            if (currentOutputs.length === 0) {
+                alert('No outputs to save');
+                return;
+            }
+
+            const question = document.getElementById('question').value;
+            const persona = document.getElementById('persona').value;
+            const alpha_cap = parseFloat(document.getElementById('cap-slider').value);
+            const alpha_style = parseFloat(document.getElementById('style-slider').value);
+            const alpha_density = parseFloat(document.getElementById('density-slider').value);
+            const alpha_correctness = parseFloat(document.getElementById('correctness-slider').value);
+
+            const saveData = {
+                question: question,
+                parameters: {
+                    persona: persona,
+                    alpha_cap: alpha_cap,
+                    alpha_style: alpha_style,
+                    alpha_density: alpha_density,
+                    alpha_correctness: alpha_correctness,
+                },
+                outputs: currentOutputs.map(output => ({
+                    id: output.id,
+                    text: output.text,
+                    metrics: output.metrics,
+                })),
+            };
+
+            try {
+                const response = await fetch('/api/save', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(saveData),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(`Successfully saved to ${data.filename}`);
+                } else {
+                    alert('Error saving outputs: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error saving outputs: ' + error.message);
+            }
+        }
+
+        async function generateStreaming(question, persona, alpha_cap, alpha_style, alpha_density, alpha_correctness, numResponses) {
+            return new Promise((resolve, reject) => {
+                // Generate a unique ID for this generation if not already set
+                if (!currentGenerationId) {
+                    currentGenerationId = `gen_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                }
+                
+                // Create result cards for all responses
+                const cards = [];
+                const textElements = [];
+                for (let i = 0; i < numResponses; i++) {
+                    let card = document.getElementById(`result-card-${i}`);
+                    if (!card) {
+                        card = createResultCard(i);
+                        card.classList.add('streaming');
+                        document.getElementById('results-container').appendChild(card);
+                    }
+                    cards.push(card);
+                    
+                    const textElement = document.getElementById(`result-text-${i}`);
+                    textElement.textContent = '';
+                    textElements.push(textElement);
+                }
+                
+                document.getElementById('result-section').style.display = 'block';
+
+                const params = new URLSearchParams({
+                    question: question,
+                    persona: persona,
+                    alpha_cap: alpha_cap.toString(),
+                    alpha_style: alpha_style.toString(),
+                    alpha_density: alpha_density.toString(),
+                    alpha_correctness: alpha_correctness.toString(),
+                    num_responses: numResponses.toString(),
+                    generation_id: currentGenerationId,
+                });
+                const eventSource = new EventSource(`/api/generate/stream?${params.toString()}`);
+                
+                // Track this event source
+                activeEventSources.push(eventSource);
+                
+                // Track which responses are done
+                const completedResponses = new Set();
+
+                eventSource.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        
+                        // Update generation_id if provided
+                        if (data.generation_id) {
+                            currentGenerationId = data.generation_id;
+                        }
+                        
+                        const responseId = data.response_id !== undefined ? data.response_id : 0;
+                        const textElement = textElements[responseId];
+                        const card = cards[responseId];
+                        
+                        if (!textElement || !card) {
+                            console.warn(`Invalid response_id: ${responseId}`);
+                            return;
+                        }
+                        
+                        if (data.error) {
+                            textElement.textContent = `Error: ${data.error}`;
+                            completedResponses.add(responseId);
+                            card.classList.remove('streaming');
+                            if (completedResponses.size === numResponses) {
+                                eventSource.close();
+                                const index = activeEventSources.indexOf(eventSource);
+                                if (index > -1) activeEventSources.splice(index, 1);
+                                reject(new Error(data.error));
+                            }
+                            return;
+                        }
+                        
+                        if (data.stopped) {
+                            textElement.textContent += ' [Generation stopped]';
+                            completedResponses.add(responseId);
+                            card.classList.remove('streaming');
+                            
+                            if (completedResponses.size === numResponses) {
+                                eventSource.close();
+                                const index = activeEventSources.indexOf(eventSource);
+                                if (index > -1) activeEventSources.splice(index, 1);
+                                document.getElementById('stop-btn').style.display = 'none';
+                                document.getElementById('loading').classList.remove('active');
+                                document.getElementById('generate-btn').disabled = false;
+                                // Clear alpha update timeout when stopped
+                                if (activeEventSources.length === 0 && alphaUpdateTimeout) {
+                                    clearTimeout(alphaUpdateTimeout);
+                                    alphaUpdateTimeout = null;
+                                }
+                                resolve();
+                            }
+                            return;
+                        }
+                        
+                        if (data.chunk) {
+                            textElement.textContent += data.chunk;
+                        }
+                        
+                        if (data.done) {
+                            completedResponses.add(responseId);
+                            card.classList.remove('streaming');
+                            
+                            // Store output for saving
+                            const fullText = textElement.textContent;
+                            currentOutputs.push({
+                                id: responseId,
+                                text: fullText,
+                                metrics: {},
+                                question: question,
+                                parameters: {
+                                    persona: persona,
+                                    alpha_cap: alpha_cap,
+                                    alpha_style: alpha_style,
+                                    alpha_density: alpha_density,
+                                    alpha_correctness: alpha_correctness,
+                                }
+                            });
+                            
+                            // Evaluate and show metrics
+                            fetch('/api/generate', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    question: question,
+                                    persona: persona,
+                                    alpha_cap: alpha_cap,
+                                    alpha_style: alpha_style,
+                                    alpha_density: alpha_density,
+                                    alpha_correctness: alpha_correctness,
+                                    num_responses: 1,
+                                }),
+                            }).then(res => res.json()).then(data => {
+                                if (data.success && data.responses && data.responses[0]) {
+                                    updateMetrics(responseId, data.responses[0].metrics);
+                                    // Update stored output with metrics
+                                    const output = currentOutputs.find(o => o.id === responseId);
+                                    if (output) {
+                                        output.metrics = data.responses[0].metrics;
+                                    }
+                                }
+                            }).catch(err => console.error('Error getting metrics:', err));
+                            
+                            // Check if all responses are done
+                            if (completedResponses.size === numResponses) {
+                                eventSource.close();
+                                const index = activeEventSources.indexOf(eventSource);
+                                if (index > -1) activeEventSources.splice(index, 1);
+                                document.getElementById('stop-btn').style.display = 'none';
+                                document.getElementById('loading').classList.remove('active');
+                                document.getElementById('generate-btn').disabled = false;
+                                document.getElementById('save-btn').style.display = 'inline-block';
+                                // Clear alpha update timeout when streaming ends
+                                if (alphaUpdateTimeout) {
+                                    clearTimeout(alphaUpdateTimeout);
+                                    alphaUpdateTimeout = null;
+                                }
+                                resolve();
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error parsing SSE data:', error);
+                        eventSource.close();
+                        const index = activeEventSources.indexOf(eventSource);
+                        if (index > -1) activeEventSources.splice(index, 1);
+                        // Remove streaming class from all cards
+                        cards.forEach(card => card.classList.remove('streaming'));
+                        if (activeEventSources.length === 0) {
+                            if (alphaUpdateTimeout) {
+                                clearTimeout(alphaUpdateTimeout);
+                                alphaUpdateTimeout = null;
+                            }
+                        }
+                        reject(error);
+                    }
+                };
+
+                eventSource.onerror = function(error) {
+                    eventSource.close();
+                    const index = activeEventSources.indexOf(eventSource);
+                    if (index > -1) activeEventSources.splice(index, 1);
+                    card.classList.remove('streaming');
+                    if (activeEventSources.length === 0) {
+                        document.getElementById('stop-btn').style.display = 'none';
+                        document.getElementById('loading').classList.remove('active');
+                        document.getElementById('generate-btn').disabled = false;
+                        // Clear alpha update timeout when streaming ends
+                        if (alphaUpdateTimeout) {
+                            clearTimeout(alphaUpdateTimeout);
+                            alphaUpdateTimeout = null;
+                        }
+                    }
+                    reject(error);
+                };
+            });
         }
 
         // Check server status on load
@@ -547,5 +1106,6 @@
     </script>
 </body>
 </html>
+
 
 

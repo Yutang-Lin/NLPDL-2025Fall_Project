@@ -217,3 +217,4 @@ main.py
 models/
 .cursor
 **/**.npz
+outputs/

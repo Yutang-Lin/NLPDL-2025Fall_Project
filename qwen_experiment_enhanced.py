@@ -11,8 +11,12 @@ from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import torch
+import gc
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
+from threading import Thread
+import queue
+from collections import deque
 
 MODEL_ID = "./models/Qwen2.5-3B-Instruct"
 DEFAULT_LAYER_INDEX = 20
@@ -814,15 +818,40 @@ class MultiVectorActivationSteerer:
             }
             for layer_idx, vecs in vectors_dict.items()
         }
-        self.alpha_cap = alpha_cap
-        self.alpha_style = alpha_style
-        self.alpha_density = alpha_density
-        self.alpha_correctness = alpha_correctness
+        # Use list to make alpha values mutable for dynamic updates
+        self.alpha_cap = [alpha_cap]
+        self.alpha_style = [alpha_style]
+        self.alpha_density = [alpha_density]
+        self.alpha_correctness = [alpha_correctness]
         self.handles = []
     
+    def update_alphas(self, alpha_cap=None, alpha_style=None, alpha_density=None, alpha_correctness=None):
+        """Update alpha values dynamically during generation."""
+        updated = False
+        if alpha_cap is not None:
+            self.alpha_cap[0] = float(alpha_cap)
+            updated = True
+        if alpha_style is not None:
+            self.alpha_style[0] = float(alpha_style)
+            updated = True
+        if alpha_density is not None:
+            self.alpha_density[0] = float(alpha_density)
+            updated = True
+        if alpha_correctness is not None:
+            self.alpha_correctness[0] = float(alpha_correctness)
+            updated = True
+        
+        if updated:
+            print(f"[MultiVectorSteerer] Updated alphas: cap={self.alpha_cap[0]}, style={self.alpha_style[0]}, density={self.alpha_density[0]}, correctness={self.alpha_correctness[0]}")
+        
+        return updated
+    
     def __enter__(self):
+        # Store reference to self for hooks to access
+        steerer_self = self
+        
         for layer_idx, vecs in self.vectors_dict.items():
-            def make_hook(layer_vecs):
+            def make_hook(layer_vecs, steerer_instance):
                 def hook(module, inputs, output):
                     if not isinstance(output, torch.Tensor):
                         return output
@@ -832,36 +861,105 @@ class MultiVectorActivationSteerer:
                     v_style = layer_vecs['v_style'].to(output.device, dtype=output.dtype)
                     v_density = layer_vecs['v_density'].to(output.device, dtype=output.dtype)
                     
-                    # Apply steering
-                    delta = (
-                        self.alpha_cap * v_cap_pure.view(1, 1, -1) +
-                        self.alpha_style * v_style.view(1, 1, -1) +
-                        self.alpha_density * v_density.view(1, 1, -1)
-                    )
+                    # Apply steering - read alpha values dynamically from steerer instance
+                    # This ensures we always read the latest values
+                    delta = 0.0
+                    if steerer_instance.alpha_cap[0] != 0.0:
+                        delta = delta + steerer_instance.alpha_cap[0] * v_cap_pure.view(1, 1, -1)
+                    if steerer_instance.alpha_style[0] != 0.0:
+                        delta = delta + steerer_instance.alpha_style[0] * v_style.view(1, 1, -1)
+                    if steerer_instance.alpha_density[0] != 0.0:
+                        delta = delta + steerer_instance.alpha_density[0] * v_density.view(1, 1, -1)
                     
                     # Add correctness if available
-                    if 'v_correctness' in layer_vecs and self.alpha_correctness != 0.0:
+                    if 'v_correctness' in layer_vecs and steerer_instance.alpha_correctness[0] != 0.0:
                         v_correctness = layer_vecs['v_correctness'].to(output.device, dtype=output.dtype)
-                        delta = delta + self.alpha_correctness * v_correctness.view(1, 1, -1)
+                        delta = delta + steerer_instance.alpha_correctness[0] * v_correctness.view(1, 1, -1)
                     
                     return output + delta
                 return hook
             
             block = self.model.model.layers[layer_idx]
-            handle = block.register_forward_hook(make_hook(vecs))
+            handle = block.register_forward_hook(make_hook(vecs, steerer_self))
             self.handles.append((layer_idx, handle))
         
         print(f"[MultiVectorSteerer] Registered hooks on {len(self.handles)} layers")
-        print(f"  alpha_cap={self.alpha_cap}, alpha_style={self.alpha_style}, alpha_density={self.alpha_density}, alpha_correctness={self.alpha_correctness}")
+        print(f"  alpha_cap={self.alpha_cap[0]}, alpha_style={self.alpha_style[0]}, alpha_density={self.alpha_density[0]}, alpha_correctness={self.alpha_correctness[0]}")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        for layer_idx, handle in self.handles:
-            handle.remove()
-        self.handles.clear()
+        # Remove all hooks safely
+        if self.handles:
+            # Use list copy to avoid modification during iteration
+            handles_copy = list(self.handles)
+            for layer_idx, handle in handles_copy:
+                try:
+                    handle.remove()
+                except Exception as e:
+                    # Hook might already be removed or invalid
+                    pass
+            self.handles.clear()
+        
+        # Clear references to help with garbage collection
+        if hasattr(self, 'vectors_dict'):
+            del self.vectors_dict
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # ==================== Generation ====================
+
+class StopOnPatternCriteria(StoppingCriteria):
+    """Stop generation when User: or System: patterns are detected."""
+    
+    def __init__(self, tokenizer, stop_patterns=None):
+        super().__init__()
+        self.tokenizer = tokenizer
+        if stop_patterns is None:
+            self.stop_patterns = ["\nUser:", "\nSystem:", "User:", "System:"]
+        else:
+            self.stop_patterns = stop_patterns
+        self.generated_text = ""
+    
+    def __call__(self, input_ids, scores, **kwargs):
+        # Handle both single and batched inputs
+        # For batched inputs, check the first sequence (all should be similar)
+        batch_idx = 0
+        generated_text = self.tokenizer.decode(input_ids[batch_idx], skip_special_tokens=True)
+        self.generated_text = generated_text
+        
+        # Check if any stop pattern appears in the generated text
+        for pattern in self.stop_patterns:
+            if pattern in generated_text:
+                # Check if it's in the assistant response part (after "Assistant:")
+                if "Assistant:" in generated_text:
+                    assistant_part = generated_text.split("Assistant:")[-1]
+                    if pattern in assistant_part:
+                        return True
+                else:
+                    # If no "Assistant:" found, check the whole text
+                    if pattern in generated_text:
+                        return True
+        
+        return False
+
+
+class ForceStopCriteria(StoppingCriteria):
+    """Stop generation when force_stop flag is set."""
+    
+    def __init__(self, stop_flag):
+        super().__init__()
+        self.stop_flag = stop_flag  # Should be a list or dict with mutable flag
+    
+    def __call__(self, input_ids, scores, **kwargs):
+        # Check if stop was requested
+        if isinstance(self.stop_flag, list):
+            return self.stop_flag[0] if self.stop_flag else False
+        elif isinstance(self.stop_flag, dict):
+            return self.stop_flag.get('stop', False)
+        else:
+            return bool(self.stop_flag)
+
 
 def generate_with_persona(
     tokenizer,
@@ -888,6 +986,10 @@ def generate_with_persona(
 
     inputs = tokenizer(full_prompt, return_tensors="pt", add_special_tokens=True).to(model.device)
 
+    # Create stopping criteria to stop on User: or System: patterns
+    stop_criteria = StopOnPatternCriteria(tokenizer)
+    stopping_criteria = StoppingCriteriaList([stop_criteria])
+
     with torch.no_grad():
         out = model.generate(
             **inputs,
@@ -896,9 +998,17 @@ def generate_with_persona(
             top_p=0.95,
             max_new_tokens=max_new_tokens,
             pad_token_id=tokenizer.pad_token_id,
+            stopping_criteria=stopping_criteria,
+            use_cache=True,  # Explicitly use cache
         )
 
     generated = tokenizer.decode(out[0], skip_special_tokens=True)
+    
+    # Clean up tensors and clear GPU cache
+    del inputs, out
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
     
     # Extract only the Assistant's response
     split_tok = "Assistant:"
@@ -909,40 +1019,434 @@ def generate_with_persona(
     else:
         assistant_response = generated.strip()
     
-    # Remove any hallucinated User: or System: prompts
-    # Check for various patterns and truncate at the first occurrence
-    stop_patterns = [
-        "\nUser:",      # New line followed by User:
-        "\nSystem:",    # New line followed by System:
-        "User:",        # User: at start or middle
-        "System:",      # System: at start or middle
-    ]
-    
-    # Find the earliest occurrence of any stop pattern
+    # Clean up: remove any remaining stop patterns that might have been generated
+    # (in case stopping criteria didn't catch them exactly)
+    stop_patterns = ["\nUser:", "\nSystem:", "User:", "System:"]
     earliest_idx = len(assistant_response)
     for pattern in stop_patterns:
         idx = assistant_response.find(pattern)
         if idx != -1 and idx < earliest_idx:
             earliest_idx = idx
     
-    # Truncate if we found a stop pattern
     if earliest_idx < len(assistant_response):
         assistant_response = assistant_response[:earliest_idx].strip()
     
-    # Additional cleanup: remove trailing incomplete sentences if they look like prompts
-    # Remove lines that start with "User:" or "System:" even if not at the beginning
-    lines = assistant_response.split('\n')
-    cleaned_lines = []
-    for line in lines:
-        line_stripped = line.strip()
-        # Skip lines that look like prompts
-        if line_stripped.startswith(('User:', 'System:')):
-            break
-        cleaned_lines.append(line)
-    
-    assistant_response = '\n'.join(cleaned_lines).strip()
-    
     return assistant_response
+
+
+def generate_with_persona_batch(
+    tokenizer,
+    model,
+    question: str,
+    persona: str = "low",
+    num_responses: int = 1,
+    max_new_tokens: int = 1024,
+) -> List[str]:
+    """Generate multiple responses in batch for the same question."""
+    if persona == "low":
+        sys_prompt = (
+            "System: You are a curious 5-year-old child. "
+            "Please explain things using very simple words and basic intuition."
+        )
+    elif persona == "high":
+        sys_prompt = (
+            "System: You are a world-renowned expert and Fields Medalist. "
+            "Please provide a rigorous, comprehensive, and theoretically profound explanation."
+        )
+    else:
+        sys_prompt = ""
+
+    full_prompt = f"{sys_prompt}\nUser: {question}\nAssistant:"
+
+    # Create batch of identical prompts
+    prompts = [full_prompt] * num_responses
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True, add_special_tokens=True).to(model.device)
+
+    # Create stopping criteria to stop on User: or System: patterns
+    stop_criteria = StopOnPatternCriteria(tokenizer)
+    stopping_criteria = StoppingCriteriaList([stop_criteria])
+
+    with torch.no_grad():
+        out = model.generate(
+            **inputs,
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.95,
+            max_new_tokens=max_new_tokens,
+            pad_token_id=tokenizer.pad_token_id,
+            stopping_criteria=stopping_criteria,
+            use_cache=True,
+            num_return_sequences=1,  # One sequence per input
+        )
+
+    # Decode all responses
+    generated_texts = tokenizer.batch_decode(out, skip_special_tokens=True)
+    
+    # Process each response
+    assistant_responses = []
+    for generated in generated_texts:
+        # Extract only the Assistant's response
+        split_tok = "Assistant:"
+        if split_tok in generated:
+            parts = generated.split(split_tok)
+            assistant_response = parts[-1].strip()
+        else:
+            assistant_response = generated.strip()
+        
+        # Clean up: remove any remaining stop patterns
+        stop_patterns = ["\nUser:", "\nSystem:", "User:", "System:"]
+        earliest_idx = len(assistant_response)
+        for pattern in stop_patterns:
+            idx = assistant_response.find(pattern)
+            if idx != -1 and idx < earliest_idx:
+                earliest_idx = idx
+        
+        if earliest_idx < len(assistant_response):
+            assistant_response = assistant_response[:earliest_idx].strip()
+        
+        assistant_responses.append(assistant_response)
+    
+    # Clean up tensors and clear GPU cache
+    del inputs, out
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    
+    return assistant_responses
+
+
+def generate_with_persona_streaming(
+    tokenizer,
+    model,
+    question: str,
+    persona: str = "low",
+    max_new_tokens: int = 1024,
+    stop_flag=None,
+):
+    """Generate text with specified persona using streaming. Stops on User: or System: patterns.
+    
+    Args:
+        tokenizer: Tokenizer for the model
+        model: Model to generate with
+        question: Question to answer
+        persona: Persona mode ('low' or 'high')
+        max_new_tokens: Maximum number of tokens to generate
+        stop_flag: Optional mutable flag (list or dict) to force stop generation
+    """
+    if persona == "low":
+        sys_prompt = (
+            "System: You are a curious 5-year-old child. "
+            "Please explain things using very simple words and basic intuition."
+        )
+    elif persona == "high":
+        sys_prompt = (
+            "System: You are a world-renowned expert and Fields Medalist. "
+            "Please provide a rigorous, comprehensive, and theoretically profound explanation."
+        )
+    else:
+        sys_prompt = ""
+
+    full_prompt = f"{sys_prompt}\nUser: {question}\nAssistant:"
+
+    inputs = tokenizer(full_prompt, return_tensors="pt", add_special_tokens=True).to(model.device)
+
+    # Create streamer
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    
+    # Create stopping criteria
+    stop_criteria = StopOnPatternCriteria(tokenizer)
+    stopping_criteria_list = [stop_criteria]
+    
+    # Add force stop criteria if stop_flag is provided
+    if stop_flag is not None:
+        force_stop_criteria = ForceStopCriteria(stop_flag)
+        stopping_criteria_list.append(force_stop_criteria)
+    
+    stopping_criteria = StoppingCriteriaList(stopping_criteria_list)
+    
+    # Generation kwargs
+    generation_kwargs = {
+        **inputs,
+        "max_new_tokens": max_new_tokens,
+        "do_sample": True,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "pad_token_id": tokenizer.pad_token_id,
+        "streamer": streamer,
+        "stopping_criteria": stopping_criteria,
+    }
+    
+    # Track accumulated text to detect stop patterns
+    accumulated_text = ""
+    stop_patterns = ["\nUser:", "\nSystem:", "User:", "System:"]
+    
+    # Thread reference for potential interruption
+    generation_thread = None
+    
+    # Start generation in a separate thread with no_grad
+    def generate_with_no_grad():
+        try:
+            with torch.no_grad():
+                model.generate(**generation_kwargs)
+        except Exception as e:
+            # If generation is interrupted, this is expected
+            pass
+        finally:
+            # Clean up after generation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
+    
+    generation_thread = Thread(target=generate_with_no_grad, daemon=True)
+    generation_thread.start()
+    
+    # Yield tokens as they are generated, checking for stop patterns
+    try:
+        for new_text in streamer:
+            accumulated_text += new_text
+            
+            # Check if any stop pattern appears in the assistant response part
+            # (after "Assistant:" if it exists, otherwise in the whole text)
+            text_to_check = accumulated_text.split("Assistant:")[-1] if "Assistant:" in accumulated_text else accumulated_text
+            
+            # Find the earliest stop pattern
+            earliest_idx = len(text_to_check)
+            found_pattern = None
+            for pattern in stop_patterns:
+                idx = text_to_check.find(pattern)
+                if idx != -1 and idx < earliest_idx:
+                    earliest_idx = idx
+                    found_pattern = pattern
+            
+            if found_pattern:
+                # Truncate at the stop pattern
+                if "Assistant:" in accumulated_text:
+                    # Calculate the actual position in accumulated_text
+                    assistant_start = accumulated_text.find("Assistant:") + len("Assistant:")
+                    actual_stop_pos = assistant_start + earliest_idx
+                    truncated = accumulated_text[:actual_stop_pos].strip()
+                else:
+                    truncated = accumulated_text[:earliest_idx].strip()
+                
+                # Yield only the part before the stop pattern (if we haven't already)
+                if truncated != accumulated_text:
+                    # Calculate what we've already yielded
+                    already_yielded_len = len(accumulated_text) - len(new_text)
+                    if len(truncated) > already_yielded_len:
+                        yield truncated[already_yielded_len:]
+                
+                # Stop yielding - the stopping criteria will stop generation
+                break
+            
+            yield new_text
+    finally:
+        # Wait for thread to finish (it should stop due to stopping criteria)
+        # Use timeout to prevent hanging
+        if generation_thread is not None:
+            generation_thread.join(timeout=5.0)  # 5 second timeout
+        
+        # Clean up GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # Force garbage collection
+        gc.collect()
+
+
+def generate_with_persona_streaming_parallel(
+    tokenizer,
+    model,
+    question: str,
+    persona: str = "low",
+    num_responses: int = 1,
+    max_new_tokens: int = 1024,
+    stop_flag=None,
+):
+    """Generate multiple responses in parallel using streaming. Yields chunks from all responses as they arrive.
+    
+    Args:
+        tokenizer: Tokenizer for the model
+        model: Model to generate with
+        question: Question to answer
+        persona: Persona mode ('low' or 'high')
+        num_responses: Number of responses to generate in parallel
+        max_new_tokens: Maximum number of tokens to generate
+        stop_flag: Optional mutable flag (list or dict) to force stop generation
+    
+    Yields:
+        Tuple of (response_id, chunk) for each chunk from any response
+    """
+    if persona == "low":
+        sys_prompt = (
+            "System: You are a curious 5-year-old child. "
+            "Please explain things using very simple words and basic intuition."
+        )
+    elif persona == "high":
+        sys_prompt = (
+            "System: You are a world-renowned expert and Fields Medalist. "
+            "Please provide a rigorous, comprehensive, and theoretically profound explanation."
+        )
+    else:
+        sys_prompt = ""
+
+    full_prompt = f"{sys_prompt}\nUser: {question}\nAssistant:"
+    
+    # Create stopping criteria
+    stop_criteria = StopOnPatternCriteria(tokenizer)
+    stopping_criteria_list = [stop_criteria]
+    
+    # Add force stop criteria if stop_flag is provided
+    if stop_flag is not None:
+        force_stop_criteria = ForceStopCriteria(stop_flag)
+        stopping_criteria_list.append(force_stop_criteria)
+    
+    stopping_criteria = StoppingCriteriaList(stopping_criteria_list)
+    
+    # Create streamers and queues for each response
+    streamers = []
+    queues = []
+    threads = []
+    accumulated_texts = [""] * num_responses
+    
+    # Create a queue to collect chunks from all streams
+    chunk_queue = queue.Queue()
+    active_responses = set(range(num_responses))
+    
+    def stream_reader(streamer, response_id, chunk_queue, accumulated_texts, active_responses):
+        """Read from a streamer and put chunks in the queue."""
+        completion_sent = False
+        try:
+            stop_patterns = ["\nUser:", "\nSystem:", "User:", "System:"]
+            for new_text in streamer:
+                # Check stop flag - but don't stop immediately, let current generation finish
+                # The stop flag will be checked by the main loop to mark as stopped
+                # but we continue processing chunks to allow natural completion
+                
+                # Only process if this response is still active
+                if response_id not in active_responses:
+                    return
+                
+                accumulated_texts[response_id] += new_text
+                
+                # Check for stop patterns
+                text_to_check = accumulated_texts[response_id].split("Assistant:")[-1] if "Assistant:" in accumulated_texts[response_id] else accumulated_texts[response_id]
+                
+                found_pattern = False
+                earliest_idx = len(text_to_check)
+                for pattern in stop_patterns:
+                    idx = text_to_check.find(pattern)
+                    if idx != -1 and idx < earliest_idx:
+                        earliest_idx = idx
+                        found_pattern = True
+                
+                if found_pattern:
+                    # Truncate at stop pattern
+                    if "Assistant:" in accumulated_texts[response_id]:
+                        assistant_start = accumulated_texts[response_id].find("Assistant:") + len("Assistant:")
+                        actual_stop_pos = assistant_start + earliest_idx
+                        truncated = accumulated_texts[response_id][:actual_stop_pos].strip()
+                    else:
+                        truncated = accumulated_texts[response_id][:earliest_idx].strip()
+                    
+                    # Yield remaining part if any
+                    already_yielded_len = len(accumulated_texts[response_id]) - len(new_text)
+                    if len(truncated) > already_yielded_len:
+                        chunk_queue.put((response_id, truncated[already_yielded_len:], False))
+                    if not completion_sent:
+                        chunk_queue.put((response_id, None, True))  # Done signal
+                        completion_sent = True
+                    return
+                
+                # Put chunk in queue - this response is still active
+                chunk_queue.put((response_id, new_text, False))
+            
+            # Streamer finished naturally - signal completion only if not already sent
+            if not completion_sent:
+                chunk_queue.put((response_id, None, True))
+                completion_sent = True
+        except Exception as e:
+            # Put error in queue and signal completion only if not already sent
+            if not completion_sent:
+                chunk_queue.put((response_id, f"Error: {str(e)}", True))
+                completion_sent = True
+    
+    # Start all generation threads in parallel
+    for resp_idx in range(num_responses):
+        inputs = tokenizer(full_prompt, return_tensors="pt", add_special_tokens=True).to(model.device)
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamers.append(streamer)
+        
+        generation_kwargs = {
+            **inputs,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": True,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "pad_token_id": tokenizer.pad_token_id,
+            "streamer": streamer,
+            "stopping_criteria": stopping_criteria,
+        }
+        
+        # Start reader thread for this streamer
+        reader_thread = Thread(target=stream_reader, args=(streamer, resp_idx, chunk_queue, accumulated_texts, active_responses), daemon=True)
+        reader_thread.start()
+        threads.append(reader_thread)
+        
+        # Start generation thread
+        def generate_with_no_grad(kwargs=generation_kwargs):
+            try:
+                with torch.no_grad():
+                    model.generate(**kwargs)
+            except Exception:
+                pass
+        
+        gen_thread = Thread(target=generate_with_no_grad, daemon=True)
+        gen_thread.start()
+        threads.append(gen_thread)
+    
+    # Yield chunks as they arrive from any stream
+    try:
+        while active_responses:
+            try:
+                # Use a longer timeout to ensure we don't miss chunks
+                response_id, chunk, is_done = chunk_queue.get(timeout=1.0)
+                
+                if is_done:
+                    if chunk:
+                        # Error message
+                        yield (response_id, chunk)
+                    else:
+                        # Completion signal
+                        yield (response_id, None)
+                    # Remove from active responses only after yielding completion
+                    active_responses.discard(response_id)
+                else:
+                    # Regular chunk - yield it (response is still active at this point)
+                    yield (response_id, chunk)
+                    
+            except queue.Empty:
+                # Check if stop was requested
+                # Don't break immediately - let active responses continue generating
+                # The stop flag will be checked by individual reader threads
+                if stop_flag is not None:
+                    if isinstance(stop_flag, list) and stop_flag[0]:
+                        # Mark all remaining as stopped, but don't break - let them finish naturally
+                        # The reader threads will check the flag and exit when they see it
+                        pass
+                    elif isinstance(stop_flag, dict) and stop_flag.get('stop', False):
+                        # Same as above - let responses finish naturally
+                        pass
+                # Continue waiting for chunks from remaining active responses
+                continue
+    
+    finally:
+        # Wait for all threads to finish
+        for thread in threads:
+            thread.join(timeout=2.0)
+        
+        # Clean up GPU cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
 
 
 # ==================== Evaluation Metrics ====================
