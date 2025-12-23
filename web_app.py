@@ -445,7 +445,7 @@ def api_generate_stream():
                         
                         for response_id, chunk in generate_with_persona_streaming_parallel(
                             tokenizer, model, question, persona=persona, 
-                            num_responses=num_responses, stop_flag=None  # Don't use stop_flag to interrupt - let all finish
+                            num_responses=num_responses, stop_flag=stop_flag  # Don't use stop_flag to interrupt - let all finish
                         ):
                             # Check if stop was requested (mark for stopped display, but don't interrupt generation)
                             with generation_lock:
